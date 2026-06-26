@@ -3,8 +3,10 @@ use axum::body::Body;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use axum::http::Method;
 use axum::http::Response;
 use axum::http::StatusCode;
+use axum::http::header;
 use axum::routing::get;
 use axum::routing::post;
 use clap::Args as ClapArgs;
@@ -44,6 +46,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tower_http::cors::Any;
+use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -176,7 +180,8 @@ async fn run_proxy(args: Args) -> anyhow::Result<()> {
         .route(CODEX_MODELS_PATH, get(codex_models))
         .route(OPENAI_MODELS_PATH, get(openai_models))
         .route(OPENAI_RESPONSES_PATH, post(responses))
-        .with_state(state);
+        .with_state(state)
+        .layer(proxy_cors_layer());
 
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
@@ -227,6 +232,13 @@ fn spawn_auth_refresh_worker(
             }
         }
     }))
+}
+
+fn proxy_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE])
 }
 
 async fn run_login(args: LoginCommand) -> anyhow::Result<()> {
@@ -501,7 +513,9 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+    use axum::http::Request;
     use clap::Parser;
+    use tower::ServiceExt;
 
     #[test]
     fn login_subcommand_does_not_require_proxy_api_key() {
@@ -590,5 +604,47 @@ mod cli_tests {
         let message = startup_message(addr, Duration::ZERO);
 
         assert!(message.contains("auth refresh: disabled"));
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_browser_requests_with_authorization() {
+        let app = axum::Router::new()
+            .route(OPENAI_RESPONSES_PATH, post(|| async { "ok" }))
+            .layer(proxy_cors_layer());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri(OPENAI_RESPONSES_PATH)
+                    .header("origin", "http://127.0.0.1:8080")
+                    .header("access-control-request-method", "POST")
+                    .header(
+                        "access-control-request-headers",
+                        "authorization,content-type",
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("preflight response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-headers")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(
+                    |value| value.contains("authorization") && value.contains("content-type")
+                )
+        );
     }
 }

@@ -211,6 +211,8 @@ complete JSON response, matching this proxy's streaming pass-through behavior.
 ## Security Notes
 
 - Bind to `127.0.0.1` by default.
+- Browser CORS requests are allowed so local web tools can call the proxy from a
+  different localhost origin. The proxy bearer token is still required.
 - Use SSH tunneling for another machine instead of exposing this directly.
 - Do not use your Codex access token as the proxy API key.
 - Do not log request headers or `~/.codex/auth.json`.
