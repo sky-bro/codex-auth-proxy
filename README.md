@@ -57,10 +57,17 @@ Options can be passed as flags or environment variables:
 | `--codex-home` | `CODEX_HOME` | `$HOME/.codex` |
 | `--upstream-base-url` | `CODEX_PROXY_UPSTREAM_BASE_URL` | `https://chatgpt.com/backend-api/codex` |
 | `--codex-client-version` | `CODEX_PROXY_CODEX_CLIENT_VERSION` | Codex dependency tag version |
+| `--auth-refresh-interval-secs` | `CODEX_PROXY_AUTH_REFRESH_INTERVAL_SECS` | `60` |
 
 `--codex-client-version` is sent only when fetching the Codex model catalog.
 The Codex backend filters `/models` by minimum client version, so the default is
 derived from the pinned `openai/codex` git dependency tag.
+
+`--auth-refresh-interval-secs` controls a background Codex auth refresh check.
+The proxy calls Codex `AuthManager::auth()` on that interval, so the same
+near-expiry refresh behavior used by Codex also runs while the proxy is idle.
+Set it to `0` to disable the background check; request-time refresh and one
+retry after upstream `401` still remain enabled.
 
 Run the proxy against the isolated Codex home with the same `CODEX_HOME`:
 

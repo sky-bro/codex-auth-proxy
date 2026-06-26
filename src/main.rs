@@ -11,6 +11,7 @@ use clap::Args as ClapArgs;
 use clap::Parser;
 use clap::Subcommand;
 use codex_auth_proxy::CODEX_MODELS_PATH;
+use codex_auth_proxy::DEFAULT_AUTH_REFRESH_INTERVAL_SECS;
 use codex_auth_proxy::DEFAULT_CODEX_CLIENT_VERSION;
 use codex_auth_proxy::DEFAULT_LISTEN;
 use codex_auth_proxy::OPENAI_MODELS_PATH;
@@ -42,6 +43,7 @@ use futures_util::TryStreamExt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -68,6 +70,13 @@ struct Args {
         default_value = DEFAULT_CODEX_CLIENT_VERSION
     )]
     codex_client_version: String,
+
+    #[arg(
+        long,
+        env = "CODEX_PROXY_AUTH_REFRESH_INTERVAL_SECS",
+        default_value_t = DEFAULT_AUTH_REFRESH_INTERVAL_SECS
+    )]
+    auth_refresh_interval_secs: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -94,6 +103,7 @@ struct AppState {
     upstream_base_url: Option<String>,
     installation_id: String,
     codex_client_version: String,
+    auth_refresh_interval: Duration,
 }
 
 #[tokio::main]
@@ -141,7 +151,10 @@ async fn run_proxy(args: Args) -> anyhow::Result<()> {
         upstream_base_url: args.upstream_base_url,
         installation_id,
         codex_client_version: args.codex_client_version,
+        auth_refresh_interval: Duration::from_secs(args.auth_refresh_interval_secs),
     };
+    let auth_refresh_manager = state.auth_manager.clone();
+    let auth_refresh_interval = state.auth_refresh_interval;
 
     let app = axum::Router::new()
         .route("/healthz", get(healthz))
@@ -153,7 +166,10 @@ async fn run_proxy(args: Args) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("failed to bind {}", args.listen))?;
-    eprintln!("{}", startup_message(args.listen));
+    let _auth_refresh_worker =
+        spawn_auth_refresh_worker(auth_refresh_manager, auth_refresh_interval);
+
+    eprintln!("{}", startup_message(args.listen, auth_refresh_interval));
     tracing::info!("listening on http://{}", args.listen);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -161,15 +177,41 @@ async fn run_proxy(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn startup_message(listen: SocketAddr) -> String {
+fn startup_message(listen: SocketAddr, auth_refresh_interval: Duration) -> String {
+    let auth_refresh = if auth_refresh_interval.is_zero() {
+        "disabled".to_string()
+    } else {
+        format!("every {}s", auth_refresh_interval.as_secs())
+    };
     format!(
         "codex-auth-proxy listening on http://{listen}\n\
+         auth refresh: {auth_refresh}\n\
          endpoints:\n\
            GET /healthz\n\
            GET /models\n\
            GET /v1/models\n\
            POST /v1/responses"
     )
+}
+
+fn spawn_auth_refresh_worker(
+    auth_manager: Arc<AuthManager>,
+    interval: Duration,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if interval.is_zero() {
+        return None;
+    }
+
+    Some(tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if auth_manager.auth().await.is_some() {
+                tracing::debug!("Codex auth refresh check completed");
+            } else {
+                tracing::debug!("Codex auth refresh check skipped because Codex is not logged in");
+            }
+        }
+    }))
 }
 
 async fn run_login(args: LoginCommand) -> anyhow::Result<()> {
@@ -435,13 +477,37 @@ mod cli_tests {
     }
 
     #[test]
+    fn proxy_uses_configurable_auth_refresh_interval() {
+        let args = Args::try_parse_from([
+            "codex-auth-proxy",
+            "--api-key",
+            "local-secret",
+            "--auth-refresh-interval-secs",
+            "120",
+        ])
+        .expect("proxy args should parse");
+
+        assert_eq!(args.auth_refresh_interval_secs, 120);
+    }
+
+    #[test]
     fn startup_message_shows_listen_url_and_endpoints() {
         let addr: SocketAddr = "127.0.0.1:8765".parse().expect("addr");
 
-        let message = startup_message(addr);
+        let message = startup_message(addr, Duration::from_secs(60));
 
         assert!(message.contains("http://127.0.0.1:8765"));
+        assert!(message.contains("auth refresh: every 60s"));
         assert!(message.contains("GET /v1/models"));
         assert!(message.contains("POST /v1/responses"));
+    }
+
+    #[test]
+    fn startup_message_shows_disabled_auth_refresh() {
+        let addr: SocketAddr = "127.0.0.1:8765".parse().expect("addr");
+
+        let message = startup_message(addr, Duration::ZERO);
+
+        assert!(message.contains("auth refresh: disabled"));
     }
 }

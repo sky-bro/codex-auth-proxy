@@ -10,6 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8765";
+pub const DEFAULT_AUTH_REFRESH_INTERVAL_SECS: u64 = 60;
 pub const DEFAULT_CODEX_CLIENT_VERSION: &str = env!("CODEX_AUTH_PROXY_CODEX_CLIENT_VERSION");
 pub const CODEX_MODELS_PATH: &str = "/models";
 pub const CODEX_RESPONSES_PATH: &str = "/responses";
