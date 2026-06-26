@@ -23,6 +23,12 @@ callers.
 cargo build --release
 ```
 
+## Release Builds
+
+GitHub Actions builds Linux x86_64, macOS x86_64, macOS aarch64, and Windows
+x86_64 binaries on pushes, pull requests, and manual workflow runs. Push a tag
+such as `v0.1.0` to publish the same archives as GitHub Release assets.
+
 ## Run
 
 Log in first. Browser login works on a machine with a local browser:
