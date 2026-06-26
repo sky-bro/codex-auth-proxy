@@ -43,9 +43,26 @@ To isolate this proxy from your normal Codex login, use a separate Codex home:
 CODEX_HOME="$HOME/.codex-proxy-profile" codex-auth-proxy login --device-auth
 ```
 
+Starting the proxy also checks whether Codex auth is available. If it is not,
+the proxy runs the same login flow first and then continues startup, so a fresh
+machine only needs one command:
+
 ```bash
 export CODEX_PROXY_API_KEY="choose-a-local-secret"
 cargo run --release -- --listen 127.0.0.1:8765
+```
+
+Use device-code login during proxy startup on remote or headless machines:
+
+```bash
+export CODEX_PROXY_API_KEY="choose-a-local-secret"
+cargo run --release -- --listen 127.0.0.1:8765 --device-auth
+```
+
+Log out and clear stored Codex auth:
+
+```bash
+codex-auth-proxy logout
 ```
 
 Options can be passed as flags or environment variables:
@@ -58,6 +75,7 @@ Options can be passed as flags or environment variables:
 | `--upstream-base-url` | `CODEX_PROXY_UPSTREAM_BASE_URL` | `https://chatgpt.com/backend-api/codex` |
 | `--codex-client-version` | `CODEX_PROXY_CODEX_CLIENT_VERSION` | Codex dependency tag version |
 | `--auth-refresh-interval-secs` | `CODEX_PROXY_AUTH_REFRESH_INTERVAL_SECS` | `60` |
+| `--device-auth` | - | `false` |
 
 `--codex-client-version` is sent only when fetching the Codex model catalog.
 The Codex backend filters `/models` by minimum client version, so the default is

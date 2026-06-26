@@ -77,12 +77,18 @@ struct Args {
         default_value_t = DEFAULT_AUTH_REFRESH_INTERVAL_SECS
     )]
     auth_refresh_interval_secs: u64,
+
+    /// Use device-code login if proxy startup needs to log in first.
+    #[arg(long)]
+    device_auth: bool,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Log in with ChatGPT auth and write credentials under CODEX_HOME.
     Login(LoginCommand),
+    /// Log out and clear stored ChatGPT auth under CODEX_HOME.
+    Logout(LogoutCommand),
 }
 
 #[derive(Debug, ClapArgs)]
@@ -93,6 +99,12 @@ struct LoginCommand {
     /// Use device-code login for remote or headless machines.
     #[arg(long)]
     device_auth: bool,
+}
+
+#[derive(Debug, ClapArgs)]
+struct LogoutCommand {
+    #[arg(long, env = "CODEX_HOME")]
+    codex_home: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -116,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(command) = args.command {
         return match command {
             Command::Login(login) => run_login(login).await,
+            Command::Logout(logout) => run_logout(logout).await,
         };
     }
 
@@ -124,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_proxy(args: Args) -> anyhow::Result<()> {
     let codex_home = args.codex_home.unwrap_or_else(default_codex_home);
+    let device_auth = args.device_auth;
     let proxy_api_key = args
         .api_key
         .context("CODEX_PROXY_API_KEY is required unless using a subcommand")?;
@@ -134,7 +148,7 @@ async fn run_proxy(args: Args) -> anyhow::Result<()> {
         )
     })?;
     let auth_manager = AuthManager::shared(
-        codex_home,
+        codex_home.clone(),
         false,
         AuthCredentialsStoreMode::Auto,
         None,
@@ -143,6 +157,7 @@ async fn run_proxy(args: Args) -> anyhow::Result<()> {
         None,
     )
     .await;
+    ensure_logged_in(auth_manager.as_ref(), codex_home.clone(), device_auth).await?;
 
     let state = AppState {
         auth_manager,
@@ -216,10 +231,50 @@ fn spawn_auth_refresh_worker(
 
 async fn run_login(args: LoginCommand) -> anyhow::Result<()> {
     let codex_home = args.codex_home.unwrap_or_else(default_codex_home);
+    perform_login(codex_home, args.device_auth, true).await
+}
+
+async fn run_logout(args: LogoutCommand) -> anyhow::Result<()> {
+    let codex_home = args.codex_home.unwrap_or_else(default_codex_home);
     let store_mode = AuthCredentialsStoreMode::Auto;
     let keyring_backend = AuthKeyringBackendKind::default();
 
-    if let Err(err) = logout_with_revoke(&codex_home, store_mode, keyring_backend, None).await {
+    logout_with_revoke(&codex_home, store_mode, keyring_backend, None)
+        .await
+        .context("failed to log out")?;
+    eprintln!("Successfully logged out");
+    Ok(())
+}
+
+async fn ensure_logged_in(
+    auth_manager: &AuthManager,
+    codex_home: PathBuf,
+    device_auth: bool,
+) -> anyhow::Result<()> {
+    if auth_manager.auth().await.is_some() {
+        return Ok(());
+    }
+
+    eprintln!("Codex is not logged in. Starting login before launching the proxy.");
+    perform_login(codex_home, device_auth, false).await?;
+    auth_manager.reload().await;
+    if auth_manager.auth().await.is_none() {
+        anyhow::bail!("Codex login did not produce usable auth");
+    }
+    Ok(())
+}
+
+async fn perform_login(
+    codex_home: PathBuf,
+    device_auth: bool,
+    clear_existing_auth: bool,
+) -> anyhow::Result<()> {
+    let store_mode = AuthCredentialsStoreMode::Auto;
+    let keyring_backend = AuthKeyringBackendKind::default();
+
+    if clear_existing_auth
+        && let Err(err) = logout_with_revoke(&codex_home, store_mode, keyring_backend, None).await
+    {
         tracing::warn!("failed to clear existing auth before login: {err}");
     }
 
@@ -232,14 +287,14 @@ async fn run_login(args: LoginCommand) -> anyhow::Result<()> {
         None,
     );
 
-    if args.device_auth {
+    if device_auth {
         run_device_code_login(opts)
             .await
             .context("failed to log in with device code")?;
     } else {
         let server = run_login_server(opts).context("failed to start login server")?;
         eprintln!(
-            "Starting local login server on http://localhost:{}.\nIf your browser did not open, navigate to this URL to authenticate:\n\n{}\n\nOn a remote or headless machine? Use `codex-auth-proxy login --device-auth` instead.",
+            "Starting local login server on http://localhost:{}.\nIf your browser did not open, navigate to this URL to authenticate:\n\n{}\n\nOn a remote or headless machine? Use `--device-auth` instead.",
             server.actual_port, server.auth_url
         );
         server
@@ -460,6 +515,32 @@ mod cli_tests {
         .expect("login subcommand should parse without CODEX_PROXY_API_KEY");
 
         assert!(matches!(args.command, Some(Command::Login(login)) if login.device_auth));
+    }
+
+    #[test]
+    fn logout_subcommand_does_not_require_proxy_api_key() {
+        let args = Args::try_parse_from([
+            "codex-auth-proxy",
+            "logout",
+            "--codex-home",
+            "/tmp/codex-auth-proxy-logout-test",
+        ])
+        .expect("logout subcommand should parse without CODEX_PROXY_API_KEY");
+
+        assert!(matches!(args.command, Some(Command::Logout(_))));
+    }
+
+    #[test]
+    fn proxy_accepts_device_auth_for_startup_login() {
+        let args = Args::try_parse_from([
+            "codex-auth-proxy",
+            "--api-key",
+            "local-secret",
+            "--device-auth",
+        ])
+        .expect("proxy args should parse");
+
+        assert!(args.device_auth);
     }
 
     #[test]
