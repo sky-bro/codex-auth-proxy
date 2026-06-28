@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -87,8 +87,40 @@ jobs:
           path: dist/${{ matrix.artifact_name }}.${{ matrix.archive_ext }}
           if-no-files-found: error
 
-      - name: Upload GitHub release asset
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## codex-auth-proxy ${{ github.ref_name }}
+
+          This release provides prebuilt binaries for:
+
+          - Linux x86_64
+          - macOS aarch64
+          - Windows x86_64
+
+          The archives include the `codex-auth-proxy` binary, `README.md`, and `LICENSE`.
+
+          To publish a release, push a version tag such as `v0.1.0`. Branch pushes and pull
+          requests build and test artifacts only; they do not create GitHub Releases.
+          EOF
+
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ matrix.artifact_name }}.${{ matrix.archive_ext }}
+          body_path: release-notes.md
+          files: dist/*

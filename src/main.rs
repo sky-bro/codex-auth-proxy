@@ -1,6 +1,7 @@
 use anyhow::Context;
 use axum::body::Body;
 use axum::body::Bytes;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::Method;
@@ -16,6 +17,8 @@ use codex_auth_proxy::CODEX_MODELS_PATH;
 use codex_auth_proxy::DEFAULT_AUTH_REFRESH_INTERVAL_SECS;
 use codex_auth_proxy::DEFAULT_CODEX_CLIENT_VERSION;
 use codex_auth_proxy::DEFAULT_LISTEN;
+use codex_auth_proxy::OPENAI_IMAGES_EDITS_PATH;
+use codex_auth_proxy::OPENAI_IMAGES_GENERATIONS_PATH;
 use codex_auth_proxy::OPENAI_MODELS_PATH;
 use codex_auth_proxy::OPENAI_RESPONSES_PATH;
 use codex_auth_proxy::X_CLIENT_REQUEST_ID;
@@ -24,7 +27,11 @@ use codex_auth_proxy::bearer_is_authorized;
 use codex_auth_proxy::codex_provider_headers;
 use codex_auth_proxy::copy_response_headers;
 use codex_auth_proxy::default_codex_home;
+use codex_auth_proxy::images_edits_url;
+use codex_auth_proxy::images_generations_url;
 use codex_auth_proxy::models_url;
+use codex_auth_proxy::normalize_images_edits_body;
+use codex_auth_proxy::normalize_images_generations_body;
 use codex_auth_proxy::normalize_responses_body;
 use codex_auth_proxy::openai_models_body_from_codex_catalog;
 use codex_auth_proxy::reject_unauthorized;
@@ -49,6 +56,8 @@ use std::time::Duration;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
+
+const PROXY_REQUEST_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Local API proxy backed by Codex ChatGPT auth")]
@@ -180,7 +189,10 @@ async fn run_proxy(args: Args) -> anyhow::Result<()> {
         .route(CODEX_MODELS_PATH, get(codex_models))
         .route(OPENAI_MODELS_PATH, get(openai_models))
         .route(OPENAI_RESPONSES_PATH, post(responses))
+        .route(OPENAI_IMAGES_GENERATIONS_PATH, post(images_generations))
+        .route(OPENAI_IMAGES_EDITS_PATH, post(images_edits))
         .with_state(state)
+        .layer(proxy_body_limit_layer())
         .layer(proxy_cors_layer());
 
     let listener = tokio::net::TcpListener::bind(args.listen)
@@ -210,7 +222,9 @@ fn startup_message(listen: SocketAddr, auth_refresh_interval: Duration) -> Strin
            GET /healthz\n\
            GET /models\n\
            GET /v1/models\n\
-           POST /v1/responses"
+           POST /v1/responses\n\
+           POST /v1/images/generations\n\
+           POST /v1/images/edits"
     )
 }
 
@@ -239,6 +253,10 @@ fn proxy_cors_layer() -> CorsLayer {
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE])
+}
+
+fn proxy_body_limit_layer() -> DefaultBodyLimit {
+    DefaultBodyLimit::max(PROXY_REQUEST_BODY_LIMIT_BYTES)
 }
 
 async fn run_login(args: LoginCommand) -> anyhow::Result<()> {
@@ -404,6 +422,65 @@ async fn responses(
     forward_responses(&state, body).await
 }
 
+async fn images_generations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    if !bearer_is_authorized(&headers, &state.proxy_api_key) {
+        let (status, message) = reject_unauthorized();
+        return Err((status, message.to_string()));
+    }
+
+    let body = Bytes::from(
+        normalize_images_generations_body(&body)
+            .map_err(|message| (StatusCode::BAD_REQUEST, message))?,
+    );
+
+    let first = forward_images_generations(&state, body.clone()).await?;
+    let upstream = if first.status == StatusCode::UNAUTHORIZED {
+        state
+            .auth_manager
+            .refresh_token()
+            .await
+            .map_err(|err| (StatusCode::UNAUTHORIZED, err.to_string()))?;
+        forward_images_generations(&state, body).await?
+    } else {
+        first
+    };
+
+    response_from_bytes(upstream.status, upstream.headers, upstream.body)
+}
+
+async fn images_edits(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    if !bearer_is_authorized(&headers, &state.proxy_api_key) {
+        let (status, message) = reject_unauthorized();
+        return Err((status, message.to_string()));
+    }
+
+    let body = Bytes::from(
+        normalize_images_edits_body(&body).map_err(|message| (StatusCode::BAD_REQUEST, message))?,
+    );
+
+    let first = forward_images_edits(&state, body.clone()).await?;
+    let upstream = if first.status == StatusCode::UNAUTHORIZED {
+        state
+            .auth_manager
+            .refresh_token()
+            .await
+            .map_err(|err| (StatusCode::UNAUTHORIZED, err.to_string()))?;
+        forward_images_edits(&state, body).await?
+    } else {
+        first
+    };
+
+    response_from_bytes(upstream.status, upstream.headers, upstream.body)
+}
+
 struct UpstreamBytes {
     status: StatusCode,
     headers: HeaderMap,
@@ -506,6 +583,88 @@ async fn forward_responses(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
+async fn forward_images_generations(
+    state: &AppState,
+    body: Bytes,
+) -> Result<UpstreamBytes, (StatusCode, String)> {
+    let auth = state.auth_manager.auth().await.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Codex is not logged in".to_string(),
+        )
+    })?;
+    let base_url = state
+        .upstream_base_url
+        .clone()
+        .unwrap_or_else(|| CHATGPT_CODEX_BASE_URL.to_string());
+    let url = images_generations_url(&base_url);
+    let mut headers = codex_provider_headers();
+    headers.extend(auth_provider_from_auth(&auth).to_auth_headers());
+    let response = state
+        .client
+        .post(url)
+        .headers(headers)
+        .header("accept", "application/json")
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+
+    let status = response.status();
+    let headers = copy_response_headers(response.headers());
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+    Ok(UpstreamBytes {
+        status,
+        headers,
+        body,
+    })
+}
+
+async fn forward_images_edits(
+    state: &AppState,
+    body: Bytes,
+) -> Result<UpstreamBytes, (StatusCode, String)> {
+    let auth = state.auth_manager.auth().await.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Codex is not logged in".to_string(),
+        )
+    })?;
+    let base_url = state
+        .upstream_base_url
+        .clone()
+        .unwrap_or_else(|| CHATGPT_CODEX_BASE_URL.to_string());
+    let url = images_edits_url(&base_url);
+    let mut headers = codex_provider_headers();
+    headers.extend(auth_provider_from_auth(&auth).to_auth_headers());
+    let response = state
+        .client
+        .post(url)
+        .headers(headers)
+        .header("accept", "application/json")
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+
+    let status = response.status();
+    let headers = copy_response_headers(response.headers());
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+    Ok(UpstreamBytes {
+        status,
+        headers,
+        body,
+    })
+}
+
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
@@ -595,6 +754,8 @@ mod cli_tests {
         assert!(message.contains("auth refresh: every 60s"));
         assert!(message.contains("GET /v1/models"));
         assert!(message.contains("POST /v1/responses"));
+        assert!(message.contains("POST /v1/images/generations"));
+        assert!(message.contains("POST /v1/images/edits"));
     }
 
     #[test]
@@ -646,5 +807,29 @@ mod cli_tests {
                     |value| value.contains("authorization") && value.contains("content-type")
                 )
         );
+    }
+
+    #[tokio::test]
+    async fn proxy_body_limit_accepts_large_image_payloads() {
+        let app = axum::Router::new()
+            .route(
+                OPENAI_IMAGES_EDITS_PATH,
+                post(|body: Bytes| async move { body.len().to_string() }),
+            )
+            .layer(proxy_body_limit_layer());
+        let body = vec![b'a'; 3 * 1024 * 1024];
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(OPENAI_IMAGES_EDITS_PATH)
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("large body response");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

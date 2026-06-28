@@ -9,6 +9,8 @@ It exposes:
 - `GET /models`
 - `GET /v1/models`
 - `POST /v1/responses`
+- `POST /v1/images/generations`
+- `POST /v1/images/edits`
 
 The proxy has its own bearer token. It never exposes the Codex access token to
 callers.
@@ -27,7 +29,7 @@ cargo build --release
 
 GitHub Actions builds Linux x86_64, macOS aarch64, and Windows x86_64 binaries
 on pushes, pull requests, and manual workflow runs. Push a tag such as `v0.1.0`
-to publish the same archives as GitHub Release assets.
+to publish the same archives as GitHub Release assets with release notes.
 
 ## Run
 
@@ -171,6 +173,34 @@ curl http://127.0.0.1:8765/v1/responses \
 ```
 
 Image generation:
+
+```bash
+curl http://127.0.0.1:8765/v1/images/generations \
+  -H "authorization: Bearer choose-a-local-secret" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "gpt-image-1",
+    "prompt": "Draw a red circle on a white background.",
+    "size": "1024x1024",
+    "n": 1
+  }'
+```
+
+Image editing:
+
+```bash
+curl http://127.0.0.1:8765/v1/images/edits \
+  -H "authorization: Bearer choose-a-local-secret" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "Make this image look like a watercolor illustration.",
+    "images": [{"image_url": "data:image/png;base64,..."}],
+    "size": "auto"
+  }'
+```
+
+Image generation through Responses:
 
 ```bash
 curl http://127.0.0.1:8765/v1/responses \

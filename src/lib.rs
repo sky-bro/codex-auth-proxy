@@ -14,8 +14,12 @@ pub const DEFAULT_AUTH_REFRESH_INTERVAL_SECS: u64 = 60;
 pub const DEFAULT_CODEX_CLIENT_VERSION: &str = env!("CODEX_AUTH_PROXY_CODEX_CLIENT_VERSION");
 pub const CODEX_MODELS_PATH: &str = "/models";
 pub const CODEX_RESPONSES_PATH: &str = "/responses";
+pub const CODEX_IMAGES_GENERATIONS_PATH: &str = "/images/generations";
+pub const CODEX_IMAGES_EDITS_PATH: &str = "/images/edits";
 pub const OPENAI_MODELS_PATH: &str = "/v1/models";
 pub const OPENAI_RESPONSES_PATH: &str = "/v1/responses";
+pub const OPENAI_IMAGES_GENERATIONS_PATH: &str = "/v1/images/generations";
+pub const OPENAI_IMAGES_EDITS_PATH: &str = "/v1/images/edits";
 pub const INSTALLATION_ID_FILENAME: &str = "installation_id";
 pub const X_CODEX_INSTALLATION_ID: &str = "x-codex-installation-id";
 pub const X_CLIENT_REQUEST_ID: &str = "x-client-request-id";
@@ -30,6 +34,22 @@ pub struct ProxyConfig {
 
 pub fn responses_url(base_url: &str) -> String {
     format!("{}{}", base_url.trim_end_matches('/'), CODEX_RESPONSES_PATH)
+}
+
+pub fn images_generations_url(base_url: &str) -> String {
+    format!(
+        "{}{}",
+        base_url.trim_end_matches('/'),
+        CODEX_IMAGES_GENERATIONS_PATH
+    )
+}
+
+pub fn images_edits_url(base_url: &str) -> String {
+    format!(
+        "{}{}",
+        base_url.trim_end_matches('/'),
+        CODEX_IMAGES_EDITS_PATH
+    )
 }
 
 pub fn models_url(base_url: &str, client_version: &str) -> String {
@@ -169,6 +189,20 @@ pub fn normalize_responses_body(body: &[u8], installation_id: &str) -> Result<Ve
     serde_json::to_vec(&value).map_err(|err| format!("failed to encode JSON body: {err}"))
 }
 
+pub fn normalize_images_generations_body(body: &[u8]) -> Result<Vec<u8>, String> {
+    let value: Value =
+        serde_json::from_slice(body).map_err(|err| format!("invalid JSON body: {err}"))?;
+    value
+        .as_object()
+        .ok_or_else(|| "request body must be a JSON object".to_string())?;
+
+    serde_json::to_vec(&value).map_err(|err| format!("failed to encode JSON body: {err}"))
+}
+
+pub fn normalize_images_edits_body(body: &[u8]) -> Result<Vec<u8>, String> {
+    normalize_images_generations_body(body)
+}
+
 pub fn copy_response_headers(headers: &HeaderMap) -> HeaderMap {
     let mut copied = HeaderMap::new();
     for name in [header::CONTENT_TYPE, header::CACHE_CONTROL] {
@@ -200,6 +234,22 @@ mod tests {
         assert_eq!(
             responses_url("https://chatgpt.com/backend-api/codex/"),
             "https://chatgpt.com/backend-api/codex/responses"
+        );
+    }
+
+    #[test]
+    fn images_generations_url_targets_codex_backend_images_generations_endpoint() {
+        assert_eq!(
+            images_generations_url("https://chatgpt.com/backend-api/codex/"),
+            "https://chatgpt.com/backend-api/codex/images/generations"
+        );
+    }
+
+    #[test]
+    fn images_edits_url_targets_codex_backend_images_edits_endpoint() {
+        assert_eq!(
+            images_edits_url("https://chatgpt.com/backend-api/codex/"),
+            "https://chatgpt.com/backend-api/codex/images/edits"
         );
     }
 
@@ -331,6 +381,56 @@ mod tests {
             .expect_err("string input should fail");
 
         assert_eq!(err, "input must be a list");
+    }
+
+    #[test]
+    fn normalize_images_generations_body_preserves_openai_request_fields() {
+        let body = br#"{
+            "model": "gpt-image-1",
+            "prompt": "Draw a red circle on a white background.",
+            "size": "1024x1024",
+            "n": 1
+        }"#;
+
+        let normalized = normalize_images_generations_body(body).expect("normalize body");
+        let value: Value = serde_json::from_slice(&normalized).expect("json");
+
+        assert_eq!(value["model"], "gpt-image-1");
+        assert_eq!(value["prompt"], "Draw a red circle on a white background.");
+        assert_eq!(value["size"], "1024x1024");
+        assert_eq!(value["n"], 1);
+        assert!(value.get("stream").is_none());
+        assert!(value.get("store").is_none());
+        assert!(value.get("client_metadata").is_none());
+    }
+
+    #[test]
+    fn normalize_images_generations_body_rejects_non_object_json() {
+        let err = normalize_images_generations_body(br#"[]"#)
+            .expect_err("array image generation request should fail");
+
+        assert_eq!(err, "request body must be a JSON object");
+    }
+
+    #[test]
+    fn normalize_images_edits_body_preserves_openai_request_fields() {
+        let body = br#"{
+            "images": [{"image_url": "data:image/png;base64,QUJD"}],
+            "model": "gpt-image-2",
+            "prompt": "Make it watercolor.",
+            "size": "auto"
+        }"#;
+
+        let normalized = normalize_images_edits_body(body).expect("normalize body");
+        let value: Value = serde_json::from_slice(&normalized).expect("json");
+
+        assert_eq!(value["model"], "gpt-image-2");
+        assert_eq!(value["prompt"], "Make it watercolor.");
+        assert_eq!(
+            value["images"][0]["image_url"],
+            "data:image/png;base64,QUJD"
+        );
+        assert_eq!(value["size"], "auto");
     }
 
     #[test]
