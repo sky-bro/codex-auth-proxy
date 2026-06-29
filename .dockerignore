@@ -1,0 +1,9 @@
+target/
+.git/
+.github/
+codex-home/
+.codex/
+.codex-proxy-profile/
+.env
+*.log
+.DS_Store

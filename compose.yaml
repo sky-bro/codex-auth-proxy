@@ -1,0 +1,15 @@
+services:
+  codex-auth-proxy:
+    image: skybro/codex-auth-proxy:latest
+    container_name: codex-auth-proxy
+    restart: unless-stopped
+    environment:
+      CODEX_HOME: /data/codex
+      CODEX_PROXY_API_KEY: ${CODEX_PROXY_API_KEY:?set CODEX_PROXY_API_KEY}
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - codex-home:/data/codex
+
+volumes:
+  codex-home:

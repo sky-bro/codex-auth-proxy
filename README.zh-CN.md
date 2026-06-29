@@ -1,11 +1,11 @@
 # codex-auth-proxy
 
-English | [简体中文](README.zh-CN.md)
+[English](README.md) | 简体中文
 
-Small localhost API proxy that uses your existing Codex ChatGPT login to call the
-Codex Responses backend.
+这是一个小型本地 API 代理。它复用你已有的 Codex ChatGPT 登录状态，调用
+Codex Responses 后端。
 
-It exposes:
+它提供：
 
 - `GET /healthz`
 - `GET /models`
@@ -14,22 +14,23 @@ It exposes:
 - `POST /v1/images/generations`
 - `POST /v1/images/edits`
 
-The proxy has its own bearer token. It never exposes the Codex access token to
-callers.
+代理有自己的 bearer token。它不会把 Codex access token 暴露给调用方。
 
-## Architecture
+默认文档是英文版 [`README.md`](README.md)，本文件是对应的中文版本。
+
+## 架构
 
 ![codex-auth-proxy architecture](docs/architecture.svg)
 
 ## Docker
 
-The Docker Hub image is:
+Docker Hub 镜像是：
 
 ```text
 skybro/codex-auth-proxy:latest
 ```
 
-Start with Docker Compose:
+使用 Docker Compose 启动：
 
 ```bash
 export CODEX_PROXY_API_KEY="choose-a-local-secret"
@@ -37,15 +38,14 @@ docker compose up -d
 docker compose logs -f codex-auth-proxy
 ```
 
-The checked-in [`compose.yaml`](compose.yaml) binds the service to
-`127.0.0.1:8765`, stores Codex auth in a Docker volume named
-`codex-home`, and sets `CODEX_HOME=/data/codex` inside the container.
+仓库里的 [`compose.yaml`](compose.yaml) 会把服务绑定到
+`127.0.0.1:8765`，把 Codex 登录数据保存到名为 `codex-home` 的 Docker volume，
+并在容器内设置 `CODEX_HOME=/data/codex`。
 
-On the first run with an empty `codex-home` volume, the proxy starts device-code
-login. Follow the URL and code printed in the container logs. The credentials
-are written to the mounted volume and survive restarts.
+如果第一次启动时 `codex-home` volume 为空，代理会使用 device-code 登录。请根据容器
+日志里打印的 URL 和 code 完成登录。登录凭据会写入挂载的 volume，容器重启后仍然可用。
 
-Manual Docker run:
+手动运行 Docker：
 
 ```bash
 docker run --rm -it \
@@ -56,103 +56,100 @@ docker run --rm -it \
   skybro/codex-auth-proxy:latest
 ```
 
-## Local Build
+## 本地构建
 
 ```bash
 cargo build --release
 ```
 
-Build the container image locally:
+本地构建容器镜像：
 
 ```bash
 docker build -t codex-auth-proxy:local .
 ```
 
-## Release Builds
+## 发布构建
 
-GitHub Actions builds Linux x86_64, macOS aarch64, and Windows x86_64 binaries
-on pushes, pull requests, and manual workflow runs.
+GitHub Actions 会在 push、pull request 和手动 workflow 运行时构建 Linux x86_64、
+macOS aarch64 和 Windows x86_64 二进制。
 
-Push a tag such as `v0.1.0` to publish the binary archives as GitHub Release
-assets. Tag builds also publish:
+推送 `v0.1.0` 这类 tag 会把二进制压缩包发布为 GitHub Release assets。tag 构建也
+会发布：
 
 - `skybro/codex-auth-proxy:v0.1.0`
 - `skybro/codex-auth-proxy:latest`
 
-Manual workflow runs publish:
+手动触发 workflow 会发布：
 
 - `skybro/codex-auth-proxy:latest`
 
-Configure these GitHub repository secrets before publishing Docker images:
+发布 Docker 镜像前，需要在 GitHub 仓库 secrets 中配置：
 
 - `DOCKERHUB_USERNAME`
 - `DOCKERHUB_TOKEN`
 
-## Run Without Docker
+## 不使用 Docker 运行
 
-Log in first. Browser login works on a machine with a local browser:
+先登录。在带本地浏览器的机器上可以使用浏览器登录：
 
 ```bash
 codex-auth-proxy login
 ```
 
-On a remote or headless machine, use device-code login:
+在远程或无头机器上，使用 device-code 登录：
 
 ```bash
 codex-auth-proxy login --device-auth
 ```
 
-To isolate this proxy from your normal Codex login, use a separate Codex home:
+如果想让这个代理和你日常 Codex 登录隔离，可以使用单独的 Codex home：
 
 ```bash
 CODEX_HOME="$HOME/.codex-proxy-profile" codex-auth-proxy login --device-auth
 ```
 
-Starting the proxy also checks whether Codex auth is available. If it is not,
-the proxy runs the same login flow first and then continues startup, so a fresh
-machine only needs one command:
+启动代理时也会检查 Codex auth 是否可用。如果不可用，代理会先运行同样的登录流程，
+然后继续启动。因此一台新机器只需要一个命令：
 
 ```bash
 export CODEX_PROXY_API_KEY="choose-a-local-secret"
 cargo run --release -- --listen 127.0.0.1:8765
 ```
 
-Use device-code login during proxy startup on remote or headless machines:
+远程或无头机器上，可以在代理启动时使用 device-code 登录：
 
 ```bash
 export CODEX_PROXY_API_KEY="choose-a-local-secret"
 cargo run --release -- --listen 127.0.0.1:8765 --device-auth
 ```
 
-Log out and clear stored Codex auth:
+退出登录并清理已保存的 Codex auth：
 
 ```bash
 codex-auth-proxy logout
 ```
 
-Options can be passed as flags or environment variables:
+选项可以通过 flag 或环境变量传入：
 
-| Flag | Env | Default |
+| Flag | Env | 默认值 |
 | --- | --- | --- |
 | `--listen` | `CODEX_PROXY_LISTEN` | `127.0.0.1:8765` |
-| `--api-key` | `CODEX_PROXY_API_KEY` | required |
+| `--api-key` | `CODEX_PROXY_API_KEY` | 必填 |
 | `--codex-home` | `CODEX_HOME` | `$HOME/.codex` |
 | `--upstream-base-url` | `CODEX_PROXY_UPSTREAM_BASE_URL` | `https://chatgpt.com/backend-api/codex` |
 | `--codex-client-version` | `CODEX_PROXY_CODEX_CLIENT_VERSION` | Codex dependency tag version |
 | `--auth-refresh-interval-secs` | `CODEX_PROXY_AUTH_REFRESH_INTERVAL_SECS` | `60` |
 | `--device-auth` | - | `false` |
 
-`--codex-client-version` is sent only when fetching the Codex model catalog.
-The Codex backend filters `/models` by minimum client version, so the default is
-derived from the pinned `openai/codex` git dependency tag.
+`--codex-client-version` 只会在获取 Codex model catalog 时发送。Codex 后端会根据最低
+客户端版本过滤 `/models`，所以默认值来自当前 pin 住的 `openai/codex` git dependency
+tag。
 
-`--auth-refresh-interval-secs` controls a background Codex auth refresh check.
-The proxy calls Codex `AuthManager::auth()` on that interval, so the same
-near-expiry refresh behavior used by Codex also runs while the proxy is idle.
-Set it to `0` to disable the background check; request-time refresh and one
-retry after upstream `401` still remain enabled.
+`--auth-refresh-interval-secs` 控制后台 Codex auth 刷新检查。代理会按这个间隔调用
+Codex `AuthManager::auth()`，所以即使代理空闲，也会复用 Codex 的临近过期刷新行为。
+设置为 `0` 可以关闭后台检查；请求时刷新和 upstream `401` 后的一次重试仍然保留。
 
-Run the proxy against the isolated Codex home with the same `CODEX_HOME`:
+使用同一个 `CODEX_HOME` 运行隔离 profile：
 
 ```bash
 export CODEX_PROXY_API_KEY="choose-a-local-secret"
@@ -160,24 +157,23 @@ CODEX_HOME="$HOME/.codex-proxy-profile" \
   cargo run --release -- --listen 127.0.0.1:8765
 ```
 
-## Call
+## 调用
 
-List models in an OpenAI-compatible shape:
+以 OpenAI-compatible 格式列出模型：
 
 ```bash
 curl http://127.0.0.1:8765/v1/models \
   -H "authorization: Bearer choose-a-local-secret"
 ```
 
-List the raw Codex model catalog, including Codex-specific metadata such as
-service tiers and model capabilities:
+列出原始 Codex model catalog，包括 service tier 和 model capability 等 Codex 专有元数据：
 
 ```bash
 curl http://127.0.0.1:8765/models \
   -H "authorization: Bearer choose-a-local-secret"
 ```
 
-Text response:
+文本响应：
 
 ```bash
 curl http://127.0.0.1:8765/v1/responses \
@@ -201,7 +197,7 @@ curl http://127.0.0.1:8765/v1/responses \
   }'
 ```
 
-Image understanding:
+图像理解：
 
 ```bash
 curl http://127.0.0.1:8765/v1/responses \
@@ -229,7 +225,7 @@ curl http://127.0.0.1:8765/v1/responses \
   }'
 ```
 
-Image generation:
+图像生成：
 
 ```bash
 curl http://127.0.0.1:8765/v1/images/generations \
@@ -243,7 +239,7 @@ curl http://127.0.0.1:8765/v1/images/generations \
   }'
 ```
 
-Image editing:
+图像编辑：
 
 ```bash
 curl http://127.0.0.1:8765/v1/images/edits \
@@ -257,7 +253,7 @@ curl http://127.0.0.1:8765/v1/images/edits \
   }'
 ```
 
-Image generation through Responses:
+通过 Responses 生成图像：
 
 ```bash
 curl http://127.0.0.1:8765/v1/responses \
@@ -287,22 +283,19 @@ curl http://127.0.0.1:8765/v1/responses \
   }'
 ```
 
-The Codex backend currently expects `input` to be a list, `store:false`, and
-`stream:true` on this path. `store:false` asks the backend not to persist this
-request as a saved ChatGPT/Codex turn; that is intentional for this local proxy.
-Using `store:true` would only be better for a proxy that also exposes saved-turn
-lifecycle behavior, such as later retrieval, continuation, and cleanup.
-`stream:true` means the backend returns server-sent events instead of one
-complete JSON response, matching this proxy's streaming pass-through behavior.
+Codex 后端目前要求这个路径上的 `input` 是 list，并且 `store:false`、
+`stream:true`。`store:false` 表示请求不要被保存成 ChatGPT/Codex 历史 turn；这对这个
+本地代理是刻意的。只有当代理也实现保存 turn 的后续读取、延续、清理等生命周期能力时，
+`store:true` 才更合适。`stream:true` 表示后端返回 server-sent events，而不是完整的一次性
+JSON 响应，这也和本代理的流式透传行为一致。
 
-## Security Notes
+## 安全说明
 
-- Bind to `127.0.0.1` by default.
-- The Compose example also binds to `127.0.0.1`.
-- Browser CORS requests are allowed so local web tools can call the proxy from a
-  different localhost origin. The proxy bearer token is still required.
-- Use SSH tunneling for another machine instead of exposing this directly.
-- Do not use your Codex access token as the proxy API key.
-- Do not log request headers or `~/.codex/auth.json`.
-- This is intended for a trusted personal environment, not as a shared public API
-  gateway.
+- 默认绑定到 `127.0.0.1`。
+- Compose 示例也绑定到 `127.0.0.1`。
+- 允许浏览器 CORS 请求，因此本地 web 工具可以从另一个 localhost origin 调用代理。
+  代理 bearer token 仍然是必需的。
+- 如果要从另一台机器访问，优先使用 SSH tunneling，而不是直接暴露服务。
+- 不要把 Codex access token 当作代理 API key。
+- 不要记录请求 headers 或 `~/.codex/auth.json`。
+- 本项目面向可信的个人环境，不适合作为共享的公网 API gateway。
